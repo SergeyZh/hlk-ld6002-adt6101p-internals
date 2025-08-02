@@ -21,11 +21,13 @@ To read (or write) data from the HLK-LD6002 sensor’s flash, you will need a Fl
 
 2. Attach the clip to the flash IC, paying attention to the orientation. The flash IC is shown in the picture below.
 
-![HLK-LD6002 flash chip](hlk-ld6002-flash-chip.png)  
+<img alt="HLK-LD6002 flash chip" src="hlk-ld6002-flash-chip.png" width="50%" />
+
 [P25Q80SH Flash Memory Datasheet](https://www.puyasemi.com/download_path/%E6%95%B0%E6%8D%AE%E6%89%8B%E5%86%8C/Flash/P25Q80SH_Datasheet_V1.4.pdf)
 
 It should look roughly like this:
-![Flipper Zero connected to HLK-LD6002 flash chip](flipper-connected-to-flash-chip.png)
+
+<img alt="Flipper Zero connected to HLK-LD6002 flash chip" src="flipper-connected-to-flash-chip.png" width="50%" />
 
 3. Launch the **Serial Flash Programmer** app on the Flipper Zero and connect the Flipper to your computer.
 

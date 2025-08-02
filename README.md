@@ -16,7 +16,7 @@ It has the following capabilities:
 
 All this is possible within 1.5–3 meters from a person.
 
-![HLK-LD6002 x 3](hlk-ld6002-x3.png)
+<img src="hlk-ld6002-x3.png" width="70%" alt="HLK-LD6002 x 3" />
 
 I really liked the idea of an affordable sensor with such broad functionality. I also wanted to better understand how radar technology works at such high frequencies.
 
@@ -28,8 +28,12 @@ The research process involves exploring the internal structure of the ADT6101P a
 
 ## Project Goals
 - [x] [Read firmware from the HLK-LD6002 sensor's flash chip](docs/how-to-read-flash-hlk-ld6002.md).
+- [x] [Flash firmware analysis](docs/flash-map-hlk-ld6002.md).
 - [x] Connect a JTAG adapter for debugging.
 - [x] Read the bootloader from the ADT6101P to understand how firmware is loading.
+- [x] [Bootloader ADT6101P analysis](docs/bootloader-adt6101p.md)
+- [x] [ota_jump_code analysis](docs/ota_jump_code-hlk-ld6002.md)
+- [x] [ota_boot_32k analysis](docs/ota_boot_32k-hlk-ld6002.md)
 - [ ] Update the firmware in a simple way, without using the Windows program.
 - [ ] Retrieve "raw" radar data from the chip to a host computer.
 - [ ] Switch between different firmware versions on the sensor to change functionality on the fly.

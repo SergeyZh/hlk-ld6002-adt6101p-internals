@@ -22,11 +22,13 @@
 
 2. Прицепляем клипсу к микросхеме Flash, обращая внимание на полярность. Микросхема flash на картинке ниже.
 
-![HLK-LD6002 flash chip](hlk-ld6002-flash-chip.png)
+<img alt="HLK-LD6002 flash chip" src="hlk-ld6002-flash-chip.png" width="50%" />
+
 [P25Q80SH Flash Memory Datasheet](https://www.puyasemi.com/download_path/%E6%95%B0%E6%8D%AE%E6%89%8B%E5%86%8C/Flash/P25Q80SH_Datasheet_V1.4.pdf)
 
 Должно получиться примерно так:
-![Flipper Zero connected to HLK-LD6002 flash chip](flipper-connected-to-flash-chip.png)
+
+<img alt="Flipper Zero connected to HLK-LD6002 flash chip" src="flipper-connected-to-flash-chip.png" width="50%" />
 
 3. Запускаем на Flipper Zero приложение "Serial Flash Programmer" и подключаем Flipper к компу.
 4. С помощью утилиты flashrom читаем данные из flash:
