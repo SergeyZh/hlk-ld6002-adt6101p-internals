@@ -26,7 +26,7 @@ It is located in memory at address '20008000h'.
     1. If updateAppxFg == 2, update App1.
     2. If updateAppxFg == 4, update App2.
 
-Application update is done through UART0 and the XMODEM protocol (?).
+Application update is done through UART0 and the [XMODEM-CRC](https://en.wikipedia.org/wiki/XMODEM#XMODEM-CRC) protocol.
 
 **!!! It seems that if the update cannot be successfully completed, the radar remains in Update mode permanently.**
 
