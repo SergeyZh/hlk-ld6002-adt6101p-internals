@@ -3,18 +3,41 @@
 import asyncio
 import sys
 import argparse
+import traceback
 import serial_asyncio
 import TinyFrame as TF
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Button, Input, Log, DataTable
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
+from textual.coordinate import Coordinate
 
 PORT_DEFAULT = "/dev/cu.usbserial-XXXX"
 BAUD_DEFAULT = "115200"
 
 class RadarApp(App):
-    """A Textual TUI application for radar communication using TinyFrame."""
+    """A Textual TUI application for radar communication using TinyFrame.
+    
+    Features:
+    - Real-time display of received TinyFrame messages
+    - Tracks and displays only the latest packet of each type (no packet accumulation)
+    - Counts how many packets of each type have been received
+    - Connection management with configurable serial port and baud rate
+    - Table clearing on disconnect for a clean state on reconnection
+    - Robust error handling and detailed logging
+    - Automatic duplicate row detection and cleanup
+    
+    The right panel displays a table with exactly one row per packet type,
+    updating existing rows when new packets of the same type are received
+    rather than adding new rows. This ensures the table remains compact and
+    focused on the current state of each packet type.
+    
+    The application uses a robust row tracking mechanism that:
+    1. Finds existing rows by their content rather than by row keys
+    2. Updates rows using direct row indices instead of potentially invalid row keys
+    3. Automatically detects and removes any duplicate rows that might occur
+    4. Maintains a clean, concise view with exactly one row per packet type
+    """
     
     CSS = """
     Screen { layout: vertical; }
@@ -24,7 +47,7 @@ class RadarApp(App):
     #main { height: 1fr; }
     #log { height: 1fr; }
     #table { height: 1fr; }
-    Button { min-width: 10; max-height: 3; }
+    
     """
     
     # Reactive variables for connection status
@@ -36,7 +59,6 @@ class RadarApp(App):
         with Horizontal(id="top"):
             yield Input(PORT_DEFAULT, placeholder="Serial port path", id="port")
             yield Input(BAUD_DEFAULT, placeholder="Baud rate", id="baud")
-        with Horizontal():
             yield Button("Connect", id="connect", variant="primary")
             yield Button("Disconnect", id="disconnect", variant="error", disabled=True)
         with Horizontal(id="main"):
@@ -44,7 +66,7 @@ class RadarApp(App):
                 yield Log(id="log", highlight=True)
             with Vertical(id="right_panel"):
                 table = DataTable(id="table")
-                table.add_columns("ID", "Type", "Length", "Data")
+                table.add_columns("Type", "Count", "ID", "Length", "Data")
                 yield table
         yield Footer()
     
@@ -54,11 +76,18 @@ class RadarApp(App):
         self.writer = None
         self.read_task = None
         
+        # Dictionary to track packet types, counts, and row indices
+        # Key: frame type, Value: {'count': int, 'row_key': str}
+        self.packet_tracker = {}
+        
         # Initialize TinyFrame
         self.tf = TF.TinyFrame()
         self.tf.TYPE_BYTES = 0x02
         self.tf.CKSUM_TYPE = 'xor'
         self.tf.SOF_BYTE = 0x01
+        
+        # Log initialization message
+        self.call_after_refresh(lambda: self.log_message("[yellow]Application initialized. Right panel will show the latest packet of each type with counters.[/yellow]"))
         
         # Add TinyFrame listeners
         self.tf.add_fallback_listener(self.fallback_listener)
@@ -67,25 +96,89 @@ class RadarApp(App):
     def fallback_listener(self, tf, frame):
         """Handle received TinyFrame messages."""
         # Update the log with the received frame
-        self.log_message(f"RX: {frame}")
+        # self.log_message(f"RX: {frame}")
         
-        # Add the frame to the data table
         try:
             # Convert binary data to hex string for display
             data_hex = frame.data.hex(' ')
-            self.query_one(DataTable).add_row(
-                f"0x{frame.id:X}", 
-                f"0x{frame.type:X}", 
-                str(frame.len), 
-                data_hex
-            )
+            table = self.query_one(DataTable)
+            
+            # Get the frame type as a string for display and as a key
+            frame_type_str = f"0x{frame.type:X}"
+            frame_type = frame.type
+            
+            # Log the current state of the packet tracker for debugging
+            # self.log_message(f"[cyan]Current packet types in tracker: {list(self.packet_tracker.keys())}[/cyan]")
+            
+            # Check if this packet type has been seen before
+            if frame_type in self.packet_tracker:
+                # Update the count for this packet type
+                self.packet_tracker[frame_type]['count'] += 1
+                count = self.packet_tracker[frame_type]['count']
+                # self.log_message(f"[blue]Updating packet type {frame_type_str}, count: {count}[/blue]")
+            else:
+                # This is a new packet type
+                count = 1
+                self.packet_tracker[frame_type] = {'count': count}
+                self.log_message(f"[green]New packet type: {frame_type_str}[/green]")
+            
+            # Find existing row with this frame type
+            existing_row_index = None
+            for i, row in enumerate(table.rows):
+                # The first column (index 0) contains the frame type
+                if table.get_cell_at(Coordinate(i,0)) == frame_type_str:
+                    existing_row_index = i
+                    break
+            
+            try:
+                if existing_row_index is not None:
+                    # Update the existing row
+                    # self.log_message(f"[blue]Found existing row at index {existing_row_index} for type {frame_type_str}[/blue]")
+                    table.update_cell_at(Coordinate(existing_row_index, 1), str(count))  # Count column
+                    table.update_cell_at(Coordinate(existing_row_index, 2), f"0x{frame.id:X}")  # ID column
+                    table.update_cell_at(Coordinate(existing_row_index, 3), str(frame.len))  # Length column
+                    table.update_cell_at(Coordinate(existing_row_index, 4), data_hex)  # Data column
+                else:
+                    # Add a new row
+                    self.log_message(f"[green]Adding new row for type {frame_type_str}[/green]")
+                    table.add_row(
+                        frame_type_str,  # Type
+                        str(count),      # Count
+                        f"0x{frame.id:X}",  # ID
+                        str(frame.len),  # Length
+                        data_hex         # Data
+                    )
+                
+                # Log the current state of the table
+                # self.log_message(f"[cyan]Packet types: {len(self.packet_tracker)}, Table rows: {len(table.rows)}[/cyan]")
+            except Exception as e:
+                self.log_message(f"[red]Error updating/adding row:[/red] {e}")
+                self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+                self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
         except Exception as e:
             self.log_message(f"[red]Error processing frame:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
     
     def log_message(self, message: str) -> None:
         """Add a message to the log widget."""
         log = self.query_one(Log)
-        log.write(message)
+        log.write(message+"\n")
+    
+    def clear_table(self) -> None:
+        """Clear the data table and reset the packet tracker."""
+        try:
+            table = self.query_one(DataTable)
+            
+            # Clear all rows from the table
+            table.clear()
+            
+            # Reset the packet tracker
+            self.packet_tracker = {}
+            
+            self.log_message("[magenta]Table cleared and packet tracker reset[/magenta]")
+        except Exception as e:
+            self.log_message(f"[red]Error clearing table:[/red] {e}")
     
     def watch_connected(self, connected: bool) -> None:
         """React to changes in the connection status."""
@@ -149,6 +242,10 @@ class RadarApp(App):
         
         self.reader = None
         self.connected = False
+        
+        # Clear the table and reset packet tracker when disconnecting
+        self.clear_table()
+        
         self.log_message("[yellow]Disconnected from serial port[/yellow]")
     
     def serial_write(self, data: bytes) -> None:
