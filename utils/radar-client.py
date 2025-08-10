@@ -57,7 +57,10 @@ def main(arguments):
             while True:
                 #line = ser.readline()   # read a '\n' terminated line
                 print("qwe")
-                tf.accept(ser.read(1000))
+                ser_read = ser.read(100)
+                print(ser_read.hex(' '))
+                print(ser_read)
+                tf.accept(ser_read)
     except serial.SerialException as e:
         print(f"Error: {e}")
         return 1
