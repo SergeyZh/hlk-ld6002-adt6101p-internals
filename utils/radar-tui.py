@@ -80,6 +80,7 @@ class RadarApp(App):
     - Custom data formatting for specific packet types (0xA0A, 0xA04)
     - Support for multiple targets (up to 4) in 0xA04 packets
     - Visual display of Target coordinates on a Cartesian plane
+    - Radar version detection and display in the footer (type 0xFFFF)
     
     The right panel displays a table with exactly one row per packet type,
     updating existing rows when new packets of the same type are received
@@ -123,8 +124,10 @@ class RadarApp(App):
     }
     """
     
-    # Reactive variables for connection status
+    # Reactive variables for connection status and radar information
     connected = reactive(False)
+    radar_version = reactive("Unknown")
+    radar_type = reactive("Unknown")
     
     def compose(self) -> ComposeResult:
         """Create the UI layout."""
@@ -169,6 +172,7 @@ class RadarApp(App):
         # Add TinyFrame listeners
         self.tf.add_fallback_listener(self.fallback_listener)
         self.tf.add_type_listener(0x100, self.fallback_listener)
+        self.tf.add_type_listener(0xFFFF, self.version_listener)
         
         # Initialize the radar plot after the canvas has been properly sized
         self.call_after_refresh(self.draw_radar_plot)
@@ -422,6 +426,20 @@ class RadarApp(App):
                             result += "\n"
                     
                     return result
+                    
+            elif frame_type == 0xFFFF:  # 0xFFFF packet - Radar version information
+                if len(data) >= 4:  # Ensure we have enough data
+                    # Extract radar type and version from the data
+                    radar_type_value = data[0]
+                    major = data[1]
+                    minor = data[2]
+                    patch = data[3]
+                    
+                    # Format as a structured string with color highlighting
+                    return (
+                        f"[bold cyan]Radar Type:[/bold cyan] {radar_type_value}, "
+                        f"[bold green]Version:[/bold green] {major}.{minor}.{patch}"
+                    )
             
             # Default formatting for other packet types
             return data.hex(' ')
@@ -464,6 +482,37 @@ class RadarApp(App):
         
         connect_button.disabled = connected
         disconnect_button.disabled = not connected
+        
+        # Update the footer with connection status
+        self.update_footer()
+        
+    def watch_radar_type(self, radar_type: str) -> None:
+        """React to changes in the radar type."""
+        self.update_footer()
+        
+    def watch_radar_version(self, radar_version: str) -> None:
+        """React to changes in the radar version."""
+        self.update_footer()
+        
+    def update_footer(self) -> None:
+        """Update the footer with radar information."""
+        try:
+            footer = self.query_one(Footer)
+            
+            # Create footer content based on connection status and radar information
+            if self.connected:
+                footer.highlight_words = True
+                footer_text = f"Connected | [bold cyan]Radar:[/bold cyan] {self.radar_type} | [bold green]Version:[/bold green] {self.radar_version}"
+            else:
+                footer_text = "Disconnected | Radar: Unknown | Version: Unknown"
+                
+            # Update the footer content
+            footer.text = footer_text
+            self.sub_title = footer_text
+        except Exception as e:
+            self.log_message(f"[red]Error updating footer:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
     
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button press events."""
@@ -500,6 +549,9 @@ class RadarApp(App):
             self.connected = True
             self.log_message(f"[green]Connected to {port} at {baud} baud[/green]")
             
+            # Request radar version information
+            self.request_radar_version()
+            
         except Exception as e:
             self.log_message(f"[red]Serial connection error:[/red] {e}")
     
@@ -523,7 +575,57 @@ class RadarApp(App):
         # Clear the table and reset packet tracker when disconnecting
         self.clear_table()
         
+        # Reset radar version information
+        self.radar_type = "Unknown"
+        self.radar_version = "Unknown"
+        
         self.log_message("[yellow]Disconnected from serial port[/yellow]")
+    
+    def request_radar_version(self) -> None:
+        """Send a request for radar version information.
+        
+        This sends an empty packet with type 0xFFFF to the radar.
+        The radar will respond with a packet of the same type containing
+        4 bytes of data: radar type (1 byte) and version (3 bytes).
+        """
+        try:
+            self.log_message("[cyan]Requesting radar version information...[/cyan]")
+            # Send an empty packet with type 0xFFFF
+            self.tf.send(0xFFFF, b"")
+        except Exception as e:
+            self.log_message(f"[red]Error requesting radar version:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+    
+    def version_listener(self, tf, frame):
+        """Handle the radar version information packet (type 0xFFFF).
+        
+        The packet contains 4 bytes of data:
+        - First byte: radar type
+        - Next 3 bytes: version in format 1.2.3
+        """
+        try:
+            if frame.len >= 4:  # Ensure we have enough data
+                # Extract radar type and version from the data
+                radar_type_value = frame.data[0]
+                major = frame.data[1]
+                minor = frame.data[2]
+                patch = frame.data[3]
+                
+                # Format the version string
+                version_str = f"{major}.{minor}.{patch}"
+                
+                # Update the reactive variables
+                self.radar_type = f"Type {radar_type_value}"
+                self.radar_version = version_str
+                
+                self.log_message(f"[green]Radar version information received: Type {radar_type_value}, Version {version_str}[/green]")
+            else:
+                self.log_message(f"[yellow]Received version packet with insufficient data: {frame.len} bytes[/yellow]")
+        except Exception as e:
+            self.log_message(f"[red]Error processing version information:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
     
     def serial_write(self, data: bytes) -> None:
         """Write data to the serial port (used by TinyFrame)."""
