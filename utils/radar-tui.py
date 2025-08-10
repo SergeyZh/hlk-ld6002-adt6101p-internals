@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import serial_asyncio
 import TinyFrame as TF
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Button, Input, Log, DataTable, Static
+from textual.widgets import Header, Footer, Button, Input, Log, DataTable, Static, Switch, Checkbox
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.coordinate import Coordinate
@@ -81,6 +81,12 @@ class RadarApp(App):
     - Support for multiple targets (up to 4) in 0xA04 packets
     - Visual display of Target coordinates on a Cartesian plane
     - Radar version detection and display in the footer (type 0xFFFF)
+    - Functions for sending various packet types to the radar:
+      - request_radar_version(): Sends a packet with type 0xFFFF to request version information
+      - request_area_data(): Sends a packet with type 0xA0A to request area data
+      - request_target_coordinates(): Sends a packet with type 0xA04 to request target coordinates
+      - request_type_100(): Sends a packet with type 0x100
+      - send_packet(): Generic function for sending any packet type with optional data
     
     The right panel displays a table with exactly one row per packet type,
     updating existing rows when new packets of the same type are received
@@ -113,6 +119,7 @@ class RadarApp(App):
     #top { height: 3; }
     Input#port { width: 40; }
     Input#baud { width: 20; }
+    Static#point_cloud_label { width: 20; }
     #main { height: 1fr; }
     #left_panel { width: 3fr; }
     #right_panel { width: 2fr; }
@@ -122,10 +129,16 @@ class RadarApp(App):
         border: round green;
         height: 5fr;
     }
+    #radar_controls {
+        height: auto;
+        padding: 0;
+        border: tab $warning;
+        margin-bottom: 1;
+    }
     #radar_status {
         height: auto;
         padding: 1;
-        border: round blue;
+        border: tab $primary;
         background: $surface;
         margin-bottom: 1;
     }
@@ -143,13 +156,18 @@ class RadarApp(App):
             yield Input(PORT_DEFAULT, placeholder="Serial port path", id="port")
             yield Input(BAUD_DEFAULT, placeholder="Baud rate", id="baud")
             yield Button("Connect", id="connect", variant="primary", compact=True)
-            yield Button("Disconnect", id="disconnect", variant="error", disabled=True)
+            yield Button("Disconnect", id="disconnect", variant="error", disabled=True, compact=True)
         with Horizontal(id="main"):
             with Vertical(id="left_panel"):
                 yield Canvas(id="radar_canvas", width=200, height=100)
             with Vertical(id="right_panel"):
                 # Radar status panel
                 yield Static("Radar Status: Loading...", id="radar_status")
+                
+                # Radar control panel
+                with Horizontal(id="radar_controls"):
+                    yield Checkbox("Point Cloud", id="on_point_cloud", value=False)
+
                 table = DataTable(id="table")
                 table.add_columns("Type", "Count", "ID", "Length", "Data")
                 yield table
@@ -183,7 +201,6 @@ class RadarApp(App):
         # and updates the DataTable using the common update_data_table function.
         # The fallback_listener handles any packet types that don't have a specific listener.
         self.tf.add_fallback_listener(self.fallback_listener)
-        self.tf.add_type_listener(0x100, self.fallback_listener)
         self.tf.add_type_listener(0xA0A, self.area_data_listener)  # Area data packets
         self.tf.add_type_listener(0xA04, self.target_coordinates_listener)  # Target coordinates packets
         self.tf.add_type_listener(0xFFFF, self.version_listener)  # Radar version information packets
@@ -193,6 +210,9 @@ class RadarApp(App):
         
         # Initialize the radar plot after the canvas has been properly sized
         self.call_after_refresh(self.draw_radar_plot)
+
+        horizontal = self.query_one("#radar_controls", Horizontal)
+        horizontal.border_title = "[bold]Radar Controls[/bold]"
     
     def on_resize(self) -> None:
         """Handle resize events to redraw the radar plot."""
@@ -520,12 +540,11 @@ class RadarApp(App):
         """React to changes in the connection status."""
         connect_button = self.query_one("#connect", Button)
         disconnect_button = self.query_one("#disconnect", Button)
-        
+
         connect_button.disabled = connected
         disconnect_button.disabled = not connected
-        
-        # Update the UI with connection status
 
+        # Update the UI with connection status
         self.update_radar_status()
         
     def watch_radar_type(self, radar_type: str) -> None:
@@ -542,18 +561,16 @@ class RadarApp(App):
         """Update the radar status widget with radar information."""
         try:
             radar_status = self.query_one("#radar_status", Static)
-            
+            radar_status.border_title = "[bold]Radar Status[/bold]"
             # Create radar status content based on connection status and radar information
             if self.connected:
                 status_text = (
-                    "[bold blue]Radar Status Panel[/bold blue]\n\n"
                     f"[bold]Connection:[/bold] [green]Connected[/green]\n"
                     f"[bold]Radar Type:[/bold] {self.radar_type}\n"
                     f"[bold]Radar Version:[/bold] {self.radar_version}"
                 )
             else:
                 status_text = (
-                    "[bold blue]Radar Status Panel[/bold blue]\n\n"
                     f"[bold]Connection:[/bold] [red]Disconnected[/red]\n"
                     f"[bold]Radar Type:[/bold] Unknown\n"
                     f"[bold]Radar Version:[/bold] Unknown"
@@ -575,7 +592,16 @@ class RadarApp(App):
             await self.connect_serial()
         elif button_id == "disconnect":
             await self.disconnect_serial()
-    
+
+    async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        checkbox_id =event.checkbox.id
+
+        if checkbox_id == "on_point_cloud":
+            if event.checkbox.value:
+                self.send_open_point_cloud_display()
+            else:
+                self.send_close_point_cloud_display()
+
     async def connect_serial(self) -> None:
         """Connect to the serial port."""
         port = self.query_one("#port", Input).value.strip()
@@ -647,6 +673,471 @@ class RadarApp(App):
             self.tf.send(0xFFFF, b"")
         except Exception as e:
             self.log_message(f"[red]Error requesting radar version:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+
+    # 0x0201 message type functions
+    
+    def send_generate_interference_zone(self) -> None:
+        """Send a command to automatically generate the interference zone.
+        
+        This sends a packet with type 0x0201 and command value 0x1.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to automatically generate the interference zone...[/cyan]")
+            # Pack the command value (0x1) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x1)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending generate interference zone command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_acquire_areas(self) -> None:
+        """Send a command to acquire the interference area and the detection area.
+        
+        This sends a packet with type 0x0201 and command value 0x2.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to acquire the interference area and detection area...[/cyan]")
+            # Pack the command value (0x2) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x2)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending acquire areas command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_clear_interference_areas(self) -> None:
+        """Send a command to clear the interference areas.
+        
+        This sends a packet with type 0x0201 and command value 0x3.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to clear the interference areas...[/cyan]")
+            # Pack the command value (0x3) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x3)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending clear interference areas command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_reset_detection_area(self) -> None:
+        """Send a command to reset the detection area.
+        
+        This sends a packet with type 0x0201 and command value 0x4.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to reset the detection area...[/cyan]")
+            # Pack the command value (0x4) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x4)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending reset detection area command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_get_delay_time(self) -> None:
+        """Send a command to get the delay time.
+        
+        This sends a packet with type 0x0201 and command value 0x5.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to get the delay time...[/cyan]")
+            # Pack the command value (0x5) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x5)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending get delay time command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_open_point_cloud_display(self) -> None:
+        """Send a command to open the point cloud display.
+        
+        This sends a packet with type 0x0201 and command value 0x6.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to open the point cloud display...[/cyan]")
+            # Pack the command value (0x6) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x6)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending open point cloud display command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_close_point_cloud_display(self) -> None:
+        """Send a command to close the point cloud display.
+        
+        This sends a packet with type 0x0201 and command value 0x7.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to close the point cloud display...[/cyan]")
+            # Pack the command value (0x7) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x7)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending close point cloud display command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_open_target_display(self) -> None:
+        """Send a command to open the target display.
+        
+        This sends a packet with type 0x0201 and command value 0x8.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to open the target display...[/cyan]")
+            # Pack the command value (0x8) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x8)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending open target display command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_close_target_display(self) -> None:
+        """Send a command to close the target display.
+        
+        This sends a packet with type 0x0201 and command value 0x9.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to close the target display...[/cyan]")
+            # Pack the command value (0x9) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x9)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending close target display command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_set_detection_sensitivity_low(self) -> None:
+        """Send a command to set the detection sensitivity to low.
+        
+        This sends a packet with type 0x0201 and command value 0xA.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to set the detection sensitivity to low...[/cyan]")
+            # Pack the command value (0xA) as a 4-byte uint32
+            command_data = struct.pack("<I", 0xA)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending set detection sensitivity to low command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_set_detection_sensitivity_medium(self) -> None:
+        """Send a command to set the detection sensitivity to medium.
+        
+        This sends a packet with type 0x0201 and command value 0xB.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to set the detection sensitivity to medium...[/cyan]")
+            # Pack the command value (0xB) as a 4-byte uint32
+            command_data = struct.pack("<I", 0xB)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending set detection sensitivity to medium command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_set_detection_sensitivity_high(self) -> None:
+        """Send a command to set the detection sensitivity to high.
+        
+        This sends a packet with type 0x0201 and command value 0xC.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to set the detection sensitivity to high...[/cyan]")
+            # Pack the command value (0xC) as a 4-byte uint32
+            command_data = struct.pack("<I", 0xC)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending set detection sensitivity to high command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_get_detection_sensitivity_status(self) -> None:
+        """Send a command to get the detection sensitivity status.
+        
+        This sends a packet with type 0x0201 and command value 0xD.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to get the detection sensitivity status...[/cyan]")
+            # Pack the command value (0xD) as a 4-byte uint32
+            command_data = struct.pack("<I", 0xD)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending get detection sensitivity status command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_set_trigger_speed_slow(self) -> None:
+        """Send a command to set the trigger speed to slow.
+        
+        This sends a packet with type 0x0201 and command value 0xE.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to set the trigger speed to slow...[/cyan]")
+            # Pack the command value (0xE) as a 4-byte uint32
+            command_data = struct.pack("<I", 0xE)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending set trigger speed to slow command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_set_trigger_speed_medium(self) -> None:
+        """Send a command to set the trigger speed to medium.
+        
+        This sends a packet with type 0x0201 and command value 0xF.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to set the trigger speed to medium...[/cyan]")
+            # Pack the command value (0xF) as a 4-byte uint32
+            command_data = struct.pack("<I", 0xF)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending set trigger speed to medium command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_set_trigger_speed_fast(self) -> None:
+        """Send a command to set the trigger speed to fast.
+        
+        This sends a packet with type 0x0201 and command value 0x10.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to set the trigger speed to fast...[/cyan]")
+            # Pack the command value (0x10) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x10)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending set trigger speed to fast command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_get_trigger_speed_status(self) -> None:
+        """Send a command to get the trigger speed status.
+        
+        This sends a packet with type 0x0201 and command value 0x11.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to get the trigger speed status...[/cyan]")
+            # Pack the command value (0x11) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x11)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending get trigger speed status command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_get_z_axis_range(self) -> None:
+        """Send a command to get the Z-axis range.
+        
+        This sends a packet with type 0x0201 and command value 0x12.
+        Message type 0x0201 is used for control instructions to the radar.
+        Note: This command applies to 3D radar only.
+        """
+        try:
+            self.log_message("[cyan]Sending command to get the Z-axis range...[/cyan]")
+            # Pack the command value (0x12) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x12)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending get Z-axis range command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_set_installation_top_mounted(self) -> None:
+        """Send a command to set the installation as top mounted.
+        
+        This sends a packet with type 0x0201 and command value 0x13.
+        Message type 0x0201 is used for control instructions to the radar.
+        Note: This command applies to 3D radar only.
+        """
+        try:
+            self.log_message("[cyan]Sending command to set the installation as top mounted...[/cyan]")
+            # Pack the command value (0x13) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x13)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending set installation as top mounted command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_set_installation_side_mounted(self) -> None:
+        """Send a command to set the installation as side mounted.
+        
+        This sends a packet with type 0x0201 and command value 0x14.
+        Message type 0x0201 is used for control instructions to the radar.
+        Note: This command applies to 3D radar only.
+        """
+        try:
+            self.log_message("[cyan]Sending command to set the installation as side mounted...[/cyan]")
+            # Pack the command value (0x14) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x14)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending set installation as side mounted command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_get_installation_method(self) -> None:
+        """Send a command to get the installation method.
+        
+        This sends a packet with type 0x0201 and command value 0x15.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to set the installation method...[/cyan]")
+            # Pack the command value (0x15) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x15)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending set installation method command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_turn_on_low_power_mode(self) -> None:
+        """Send a command to turn on the low power mode when unattended.
+        
+        This sends a packet with type 0x0201 and command value 0x16.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to turn on the low power mode when unattended...[/cyan]")
+            # Pack the command value (0x16) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x16)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending turn on low power mode command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_turn_off_low_power_mode(self) -> None:
+        """Send a command to turn off the low power mode when unattended.
+        
+        This sends a packet with type 0x0201 and command value 0x17.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to turn off the low power mode when unattended...[/cyan]")
+            # Pack the command value (0x17) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x17)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending turn off low power mode command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_get_low_power_mode_status(self) -> None:
+        """Send a command to obtain whether the low power mode is turned on when unattended.
+        
+        This sends a packet with type 0x0201 and command value 0x18.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to get the low power mode status...[/cyan]")
+            # Pack the command value (0x18) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x18)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending get low power mode status command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_get_sleeping_time(self) -> None:
+        """Send a command to obtain the sleeping time in the low power mode when unattended.
+        
+        This sends a packet with type 0x0201 and command value 0x19.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to get the sleeping time in low power mode...[/cyan]")
+            # Pack the command value (0x19) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x19)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending get sleeping time command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_reset_unattended_status(self) -> None:
+        """Send a command to reset the unattended status.
+        
+        This sends a packet with type 0x0201 and command value 0x1A.
+        Message type 0x0201 is used for control instructions to the radar.
+        """
+        try:
+            self.log_message("[cyan]Sending command to reset the unattended status...[/cyan]")
+            # Pack the command value (0x1A) as a 4-byte uint32
+            command_data = struct.pack("<I", 0x1A)
+            # Send the packet with type 0x0201 and the command data
+            self.tf.send(0x0201, command_data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending reset unattended status command:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
+    def send_packet(self, packet_type: int, data: bytes = b"") -> None:
+        """Send a packet with the specified type and data to the radar.
+        
+        This is a generic function for sending any packet type to the radar.
+        
+        Args:
+            packet_type: The type of the packet to send (e.g., 0xA0A, 0xA04, 0xFFFF)
+            data: The binary data to include in the packet (default: empty)
+        """
+        try:
+            self.log_message(f"[cyan]Sending packet type 0x{packet_type:X} with {len(data)} bytes of data...[/cyan]")
+            # Send the packet with the specified type and data
+            self.tf.send(packet_type, data)
+        except Exception as e:
+            self.log_message(f"[red]Error sending packet type 0x{packet_type:X}:[/red] {e}")
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
     
