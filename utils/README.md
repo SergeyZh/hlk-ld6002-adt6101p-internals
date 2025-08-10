@@ -5,7 +5,7 @@ A Text-based User Interface (TUI) application for radar communication using the 
 ## Features
 
 - Modern, responsive terminal interface using the Textual framework
-- Real-time display of received TinyFrame messages
+- Real-time display of received [TinyFrame](https://github.com/MightyPork/PonyFrame) messages
 - Connection management with configurable serial port and baud rate
 - Command-line arguments for easy configuration
 - Detailed logging of all communication
