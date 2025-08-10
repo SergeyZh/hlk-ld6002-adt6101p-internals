@@ -170,9 +170,14 @@ class RadarApp(App):
         self.call_after_refresh(lambda: self.log_message("[yellow]Application initialized. Right panel will show the latest packet of each type with counters.[/yellow]"))
         
         # Add TinyFrame listeners
+        # Each packet type has its own listener function that processes the specific packet type
+        # and updates the DataTable using the common update_data_table function.
+        # The fallback_listener handles any packet types that don't have a specific listener.
         self.tf.add_fallback_listener(self.fallback_listener)
         self.tf.add_type_listener(0x100, self.fallback_listener)
-        self.tf.add_type_listener(0xFFFF, self.version_listener)
+        self.tf.add_type_listener(0xA0A, self.area_data_listener)  # Area data packets
+        self.tf.add_type_listener(0xA04, self.target_coordinates_listener)  # Target coordinates packets
+        self.tf.add_type_listener(0xFFFF, self.version_listener)  # Radar version information packets
         
         # Initialize the radar plot after the canvas has been properly sized
         self.call_after_refresh(self.draw_radar_plot)
@@ -295,29 +300,34 @@ class RadarApp(App):
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
     
-    def fallback_listener(self, tf, frame):
-        """Handle received TinyFrame messages."""
-        # Update the log with the received frame
-        # self.log_message(f"RX: {frame}")
+    def update_data_table(self, frame, formatted_data):
+        """Update the DataTable with frame information.
         
+        This is a base function that handles the common logic for updating the DataTable
+        with frame information, regardless of the packet type. It's used by all specific
+        packet type listener functions to avoid code duplication.
+        
+        The function:
+        1. Updates the packet counter for the frame type
+        2. Finds the existing row in the table for this frame type (if any)
+        3. Either updates the existing row or adds a new row to the table
+        
+        Args:
+            frame: The TinyFrame frame object containing type, id, length, and data
+            formatted_data: The formatted data string to display in the table
+        """
         try:
-            # Format the data based on packet type
-            formatted_data = self.format_packet_data(frame.type, frame.data)
             table = self.query_one(DataTable)
             
             # Get the frame type as a string for display and as a key
             frame_type_str = f"0x{frame.type:X}"
             frame_type = frame.type
             
-            # Log the current state of the packet tracker for debugging
-            # self.log_message(f"[cyan]Current packet types in tracker: {list(self.packet_tracker.keys())}[/cyan]")
-            
             # Check if this packet type has been seen before
             if frame_type in self.packet_tracker:
                 # Update the count for this packet type
                 self.packet_tracker[frame_type]['count'] += 1
                 count = self.packet_tracker[frame_type]['count']
-                # self.log_message(f"[blue]Updating packet type {frame_type_str}, count: {count}[/blue]")
             else:
                 # This is a new packet type
                 count = 1
@@ -335,7 +345,6 @@ class RadarApp(App):
             try:
                 if existing_row_index is not None:
                     # Update the existing row
-                    # self.log_message(f"[blue]Found existing row at index {existing_row_index} for type {frame_type_str}[/blue]")
                     table.update_cell_at(Coordinate(existing_row_index, 1), str(count))  # Count column
                     table.update_cell_at(Coordinate(existing_row_index, 2), f"0x{frame.id:X}")  # ID column
                     table.update_cell_at(Coordinate(existing_row_index, 3), str(frame.len))  # Length column
@@ -350,15 +359,35 @@ class RadarApp(App):
                         str(frame.len),  # Length
                         formatted_data   # Data
                     )
-                
-                # Log the current state of the table
-                # self.log_message(f"[cyan]Packet types: {len(self.packet_tracker)}, Table rows: {len(table.rows)}[/cyan]")
             except Exception as e:
                 self.log_message(f"[red]Error updating/adding row:[/red] {e}")
                 self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
                 self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
         except Exception as e:
-            self.log_message(f"[red]Error processing frame:[/red] {e}")
+            self.log_message(f"[red]Error processing frame for data table:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+    
+    def fallback_listener(self, tf, frame):
+        """Handle received TinyFrame messages that don't have a specific listener.
+        
+        This function is registered as the fallback listener and will be called for any
+        packet type that doesn't have a specific listener registered. It formats the data
+        using the format_packet_data function and updates the DataTable using the
+        update_data_table function.
+        
+        Args:
+            tf: The TinyFrame instance
+            frame: The received frame object
+        """
+        try:
+            # Format the data based on packet type
+            formatted_data = self.format_packet_data(frame.type, frame.data)
+            
+            # Update the data table
+            self.update_data_table(frame, formatted_data)
+        except Exception as e:
+            self.log_message(f"[red]Error in fallback listener:[/red] {e}")
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
     
@@ -597,12 +626,69 @@ class RadarApp(App):
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
     
+    def area_data_listener(self, tf, frame):
+        """Handle the area data packet (type 0xA0A).
+        
+        This function is registered as a specific listener for packet type 0xA0A (area data).
+        It formats the data using the format_packet_data function and updates the DataTable
+        using the update_data_table function.
+        
+        The packet contains area data information with 4 areas (area0, area1, area2, area3).
+        
+        Args:
+            tf: The TinyFrame instance
+            frame: The received frame object with type 0xA0A
+        """
+        try:
+            # Format the data using the existing format_packet_data function
+            formatted_data = self.format_packet_data(frame.type, frame.data)
+            
+            # Update the data table
+            self.update_data_table(frame, formatted_data)
+        except Exception as e:
+            self.log_message(f"[red]Error in area data listener:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+    
+    def target_coordinates_listener(self, tf, frame):
+        """Handle the target coordinates packet (type 0xA04).
+        
+        This function is registered as a specific listener for packet type 0xA04 (target coordinates).
+        It formats the data using the format_packet_data function and updates the DataTable
+        using the update_data_table function.
+        
+        The packet contains target coordinate information for up to 4 targets, including
+        position, velocity, and other target attributes.
+        
+        Args:
+            tf: The TinyFrame instance
+            frame: The received frame object with type 0xA04
+        """
+        try:
+            # Format the data using the existing format_packet_data function
+            formatted_data = self.format_packet_data(frame.type, frame.data)
+            
+            # Update the data table
+            self.update_data_table(frame, formatted_data)
+        except Exception as e:
+            self.log_message(f"[red]Error in target coordinates listener:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+    
     def version_listener(self, tf, frame):
         """Handle the radar version information packet (type 0xFFFF).
+        
+        This function is registered as a specific listener for packet type 0xFFFF (radar version).
+        It extracts radar type and version information from the packet, updates the application's
+        reactive variables, and also updates the DataTable using the update_data_table function.
         
         The packet contains 4 bytes of data:
         - First byte: radar type
         - Next 3 bytes: version in format 1.2.3
+        
+        Args:
+            tf: The TinyFrame instance
+            frame: The received frame object with type 0xFFFF
         """
         try:
             if frame.len >= 4:  # Ensure we have enough data
@@ -620,6 +706,12 @@ class RadarApp(App):
                 self.radar_version = version_str
                 
                 self.log_message(f"[green]Radar version information received: Type {radar_type_value}, Version {version_str}[/green]")
+                
+                # Format the data using the existing format_packet_data function
+                formatted_data = self.format_packet_data(frame.type, frame.data)
+                
+                # Update the data table
+                self.update_data_table(frame, formatted_data)
             else:
                 self.log_message(f"[yellow]Received version packet with insufficient data: {frame.len} bytes[/yellow]")
         except Exception as e:
