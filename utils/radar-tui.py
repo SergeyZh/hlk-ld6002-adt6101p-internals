@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import serial_asyncio
 import TinyFrame as TF
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Button, Input, Log, DataTable
+from textual.widgets import Header, Footer, Button, Input, Log, DataTable, Static
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.coordinate import Coordinate
@@ -122,6 +122,13 @@ class RadarApp(App):
         border: round green;
         height: 5fr;
     }
+    #radar_status {
+        height: auto;
+        padding: 1;
+        border: round blue;
+        background: $surface;
+        margin-bottom: 1;
+    }
     """
     
     # Reactive variables for connection status and radar information
@@ -141,6 +148,8 @@ class RadarApp(App):
             with Vertical(id="left_panel"):
                 yield Canvas(id="radar_canvas", width=200, height=100)
             with Vertical(id="right_panel"):
+                # Radar status panel
+                yield Static("Radar Status: Loading...", id="radar_status")
                 table = DataTable(id="table")
                 table.add_columns("Type", "Count", "ID", "Length", "Data")
                 yield table
@@ -178,6 +187,9 @@ class RadarApp(App):
         self.tf.add_type_listener(0xA0A, self.area_data_listener)  # Area data packets
         self.tf.add_type_listener(0xA04, self.target_coordinates_listener)  # Target coordinates packets
         self.tf.add_type_listener(0xFFFF, self.version_listener)  # Radar version information packets
+        
+        # Initialize the radar status widget
+        self.call_after_refresh(self.update_radar_status)
         
         # Initialize the radar plot after the canvas has been properly sized
         self.call_after_refresh(self.draw_radar_plot)
@@ -512,37 +524,49 @@ class RadarApp(App):
         connect_button.disabled = connected
         disconnect_button.disabled = not connected
         
-        # Update the footer with connection status
-        self.update_footer()
+        # Update the UI with connection status
+
+        self.update_radar_status()
         
     def watch_radar_type(self, radar_type: str) -> None:
         """React to changes in the radar type."""
-        self.update_footer()
+
+        self.update_radar_status()
         
     def watch_radar_version(self, radar_version: str) -> None:
         """React to changes in the radar version."""
-        self.update_footer()
+
+        self.update_radar_status()
         
-    def update_footer(self) -> None:
-        """Update the footer with radar information."""
+    def update_radar_status(self) -> None:
+        """Update the radar status widget with radar information."""
         try:
-            footer = self.query_one(Footer)
+            radar_status = self.query_one("#radar_status", Static)
             
-            # Create footer content based on connection status and radar information
+            # Create radar status content based on connection status and radar information
             if self.connected:
-                footer.highlight_words = True
-                footer_text = f"Connected | [bold cyan]Radar:[/bold cyan] {self.radar_type} | [bold green]Version:[/bold green] {self.radar_version}"
+                status_text = (
+                    "[bold blue]Radar Status Panel[/bold blue]\n\n"
+                    f"[bold]Connection:[/bold] [green]Connected[/green]\n"
+                    f"[bold]Radar Type:[/bold] {self.radar_type}\n"
+                    f"[bold]Radar Version:[/bold] {self.radar_version}"
+                )
             else:
-                footer_text = "Disconnected | Radar: Unknown | Version: Unknown"
+                status_text = (
+                    "[bold blue]Radar Status Panel[/bold blue]\n\n"
+                    f"[bold]Connection:[/bold] [red]Disconnected[/red]\n"
+                    f"[bold]Radar Type:[/bold] Unknown\n"
+                    f"[bold]Radar Version:[/bold] Unknown"
+                )
                 
-            # Update the footer content
-            footer.text = footer_text
-            self.sub_title = footer_text
+            # Update the radar status content
+            radar_status.update(status_text)
+            
         except Exception as e:
-            self.log_message(f"[red]Error updating footer:[/red] {e}")
+            self.log_message(f"[red]Error updating radar status:[/red] {e}")
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
-    
+
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button press events."""
         button_id = event.button.id
