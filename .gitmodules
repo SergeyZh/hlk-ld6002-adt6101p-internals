@@ -1,0 +1,3 @@
+[submodule "utils/vendor/PonyFrame"]
+	path = utils/vendor/PonyFrame
+	url = git@github.com:MightyPork/PonyFrame.git

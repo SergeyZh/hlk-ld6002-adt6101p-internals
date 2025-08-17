@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 
 import serial
-import TinyFrame as TF
+from vendor.PonyFrame.TinyFrame import TinyFrame as TF
 import os
 import sys
 import time
 
-from TinyFrame import (TinyFrame)
+# from TinyFrame import (TinyFrame)
 
-tf: TinyFrame = TF.TinyFrame()
+tf: TF = TF()
 
 def fallback_listener(tf, frame):
     # print("Fallback listener")

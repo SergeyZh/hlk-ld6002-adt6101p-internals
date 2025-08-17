@@ -7,7 +7,7 @@ import traceback
 import struct
 from dataclasses import dataclass
 import serial_asyncio
-import TinyFrame as TF
+from vendor.PonyFrame.TinyFrame import TinyFrame as TF
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Button, Input, Log, DataTable, Static, Switch, Checkbox
 from textual.containers import Horizontal, Vertical
@@ -210,7 +210,7 @@ class RadarApp(App):
         self.current_point_cloud: list[CloudPoint] = []
         
         # Initialize TinyFrame
-        self.tf = TF.TinyFrame()
+        self.tf = TF()
         self.tf.TYPE_BYTES = 0x02
         self.tf.CKSUM_TYPE = 'xor'
         self.tf.SOF_BYTE = 0x01

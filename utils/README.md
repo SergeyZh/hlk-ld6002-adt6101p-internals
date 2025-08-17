@@ -2,6 +2,8 @@
 
 A Text-based User Interface (TUI) application for radar communication using the TinyFrame protocol.
 
+<img src="radar-tui-screenshot.png" width="70%" alt="Radar TUI Screenshot" />
+
 ## Features
 
 - Modern, responsive terminal interface using the Textual framework
@@ -121,6 +123,30 @@ If the interface doesn't display correctly:
 1. Ensure your terminal supports colors and Unicode characters
 2. Try resizing your terminal window
 3. Check that you're using a compatible terminal emulator
+
+## Submodule: TinyFrame (PonyFrame)
+
+This repository uses a git submodule for the TinyFrame Python implementation. The submodule is located under utils only:
+- utils/vendor/PonyFrame — git@github.com:MightyPork/PonyFrame.git
+
+Why: Utilities in utils/ use TinyFrame. Instead of vendoring a copy, we track the upstream PonyFrame project as a submodule.
+
+```python
+from vendor.PonyFrame.TinyFrame import TinyFrame as TF
+
+```
+
+### Cloning with submodules
+- Recommended (single step):
+  - `git clone --recurse-submodules <this-repo-url>`
+- If you already cloned without submodules:
+  - `git submodule update --init --recursive`
+
+### Updating to the latest commit and submodules
+- `git pull`
+- `git submodule update --init --recursive`
+
+Note: if you prefer HTTPS for the submodule, change the URL in .gitmodules accordingly.
 
 ## License
 
