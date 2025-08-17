@@ -218,6 +218,23 @@ class RadarApp(App):
         # Log initialization message
         self.call_after_refresh(lambda: self.log_message("[yellow]Application initialized. Right panel will show the latest packet of each type with counters.[/yellow]"))
         
+        # Internal flags to control UI event side-effects
+        self._suppress_on_targets_event = False
+        self._suppress_on_point_cloud_event = False
+
+        # Device state derived from incoming messages (source of truth)
+        self._targets_active = False
+        self._point_cloud_active = False
+        # Monotonic timestamps of last packets to infer feature OFF by timeout
+        self._last_a04_time = 0.0
+        self._last_a08_time = 0.0
+        # Timeout window (seconds) without data to consider feature OFF
+        self._feature_timeout_sec = 1.0
+        # Grace period after user CLOSE request to ignore transient incoming data
+        self._command_grace_sec = 1.5
+        self._targets_close_grace_until = 0.0
+        self._point_cloud_close_grace_until = 0.0
+        
         # Add TinyFrame listeners
         # Each packet type has its own listener function that processes the specific packet type
         # and updates the DataTable using the common update_data_table function.
@@ -332,7 +349,11 @@ class RadarApp(App):
             canvas.write_text(y_label_x, y_label_y, "Y,m", TextAlign.LEFT)
             
             # Draw targets
-            if self.current_targets:
+            try:
+                on_targets = self.query_one("#on_targets", Checkbox).value
+            except Exception:
+                on_targets = False
+            if on_targets and self.current_targets:
                 # Convert target coordinates to canvas coordinates
                 canvas_points = []
                 for target in self.current_targets:
@@ -660,18 +681,44 @@ class RadarApp(App):
         checkbox_id =event.checkbox.id
 
         if checkbox_id == "on_point_cloud":
+            # If this change is triggered by an incoming message, do not send commands
+            if getattr(self, "_suppress_on_point_cloud_event", False):
+                self.call_after_refresh(self.draw_radar_plot)
+                return
+            # Send user's desired command. Do not force checkbox to device state immediately.
+            import asyncio as _asyncio
+            now = _asyncio.get_event_loop().time()
             if event.checkbox.value:
+                # User requests OPEN: clear any close-grace window
+                self._point_cloud_close_grace_until = 0.0
                 self.send_open_point_cloud_display()
             else:
+                # User requests CLOSE: start grace window to ignore transient incoming data
+                self._point_cloud_close_grace_until = now + self._command_grace_sec
                 self.send_close_point_cloud_display()
-            # Redraw to show/hide point cloud immediately
+                # Ensure a timeout is scheduled based on the last known packet time
+                self._schedule_feature_timeout("point_cloud")
+            # Redraw
             self.call_after_refresh(self.draw_radar_plot)
         elif checkbox_id == "on_targets":
+            # If this change is triggered by an incoming message, do not send commands
+            if getattr(self, "_suppress_on_targets_event", False):
+                self.call_after_refresh(self.draw_radar_plot)
+                return
+            # Send user's desired command. Do not force checkbox to device state immediately.
+            import asyncio as _asyncio
+            now = _asyncio.get_event_loop().time()
             if event.checkbox.value:
+                # User requests OPEN: clear any close-grace window
+                self._targets_close_grace_until = 0.0
                 self.send_open_target_display()
             else:
+                # User requests CLOSE: start grace window to ignore transient incoming data
+                self._targets_close_grace_until = now + self._command_grace_sec
                 self.send_close_target_display()
-            # Redraw to reflect targets visibility or state change
+                # Ensure a timeout is scheduled based on the last known packet time
+                self._schedule_feature_timeout("targets")
+            # Redraw
             self.call_after_refresh(self.draw_radar_plot)
 
     async def connect_serial(self) -> None:
@@ -730,6 +777,32 @@ class RadarApp(App):
         self.radar_type = "Unknown"
         self.radar_version = "Unknown"
         
+        # Reset device-derived feature states and reflect in UI
+        self._targets_active = False
+        self._point_cloud_active = False
+        self._targets_close_grace_until = 0.0
+        self._point_cloud_close_grace_until = 0.0
+        try:
+            cb_t = self.query_one("#on_targets", Checkbox)
+            if cb_t.value is not False:
+                self._suppress_on_targets_event = True
+                try:
+                    cb_t.value = False
+                finally:
+                    self._suppress_on_targets_event = False
+        except Exception:
+            pass
+        try:
+            cb_pc = self.query_one("#on_point_cloud", Checkbox)
+            if cb_pc.value is not False:
+                self._suppress_on_point_cloud_event = True
+                try:
+                    cb_pc.value = False
+                finally:
+                    self._suppress_on_point_cloud_event = False
+        except Exception:
+            pass
+
         self.log_message("[yellow]Disconnected from serial port[/yellow]")
     
     def request_radar_version(self) -> None:
@@ -1247,6 +1320,10 @@ class RadarApp(App):
         The packet contains target coordinate information for up to 4 targets, including
         position, velocity, and other target attributes.
         
+        Additionally, upon receiving this message, we set the UI checkbox "Targets" to True
+        to reflect that the radar has this feature enabled already. We avoid sending any
+        control command in response to this packet.
+        
         Args:
             tf: The TinyFrame instance
             frame: The received frame object with type 0xA04
@@ -1257,6 +1334,35 @@ class RadarApp(App):
             
             # Update the data table
             self.update_data_table(frame, formatted_data)
+            
+            # Update state and ensure the Targets checkbox reflects that targets are enabled when 0xA04 arrives
+            import asyncio as _asyncio
+            loop = _asyncio.get_event_loop()
+            now = loop.time()
+            # Respect close-grace window: ignore enabling while grace is active
+            if now < getattr(self, "_targets_close_grace_until", 0.0):
+                # Do not update last time or active state to allow timeout to turn it off
+                pass
+            else:
+                self._last_a04_time = now
+                if not self._targets_active:
+                    self._targets_active = True
+                    try:
+                        checkbox = self.query_one("#on_targets", Checkbox)
+                        if checkbox.value is not True:
+                            # Suppress event side-effects while updating programmatically
+                            self._suppress_on_targets_event = True
+                            try:
+                                checkbox.value = True
+                            finally:
+                                self._suppress_on_targets_event = False
+                            # Redraw to reflect UI state immediately
+                            self.call_after_refresh(self.draw_radar_plot)
+                    except Exception:
+                        # If UI not ready or checkbox not found, ignore silently
+                        pass
+                # Schedule timeout to turn it off if no packets arrive for a while
+                self._schedule_feature_timeout("targets")
         except Exception as e:
             self.log_message(f"[red]Error in target coordinates listener:[/red] {e}")
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
@@ -1265,14 +1371,105 @@ class RadarApp(App):
     def point_cloud_listener(self, tf, frame):
         """Handle the point cloud packet (type 0xA08).
         Parses points, updates state, and updates the DataTable.
+        Additionally, upon receiving this message, set the "Point Cloud" checkbox to True
+        to reflect that the radar has this feature enabled already, without sending any
+        control commands in response.
         """
         try:
             formatted_data = self.format_packet_data(frame.type, frame.data)
             self.update_data_table(frame, formatted_data)
+
+            # Update state and ensure the Point Cloud checkbox reflects that PC is enabled when 0xA08 arrives
+            import asyncio as _asyncio
+            loop = _asyncio.get_event_loop()
+            now = loop.time()
+            # Respect close-grace window: ignore enabling while grace is active
+            if now < getattr(self, "_point_cloud_close_grace_until", 0.0):
+                # Do not update last time or active state to allow timeout to turn it off
+                pass
+            else:
+                self._last_a08_time = now
+                if not self._point_cloud_active:
+                    self._point_cloud_active = True
+                    try:
+                        checkbox = self.query_one("#on_point_cloud", Checkbox)
+                        if checkbox.value is not True:
+                            # Suppress event side-effects while updating programmatically
+                            self._suppress_on_point_cloud_event = True
+                            try:
+                                checkbox.value = True
+                            finally:
+                                self._suppress_on_point_cloud_event = False
+                            # Redraw to reflect UI state immediately
+                            self.call_after_refresh(self.draw_radar_plot)
+                    except Exception:
+                        # If UI not ready or checkbox not found, ignore silently
+                        pass
+                # Schedule timeout to turn it off if no packets arrive for a while
+                self._schedule_feature_timeout("point_cloud")
         except Exception as e:
             self.log_message(f"[red]Error in point cloud listener:[/red] {e}")
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+    
+    def _schedule_feature_timeout(self, feature: str) -> None:
+        """Schedule a timeout check for a feature ('targets' or 'point_cloud').
+        If no new packets are received within the timeout window, mark the feature as inactive
+        and update the checkbox to False programmatically.
+        """
+        try:
+            import asyncio as _asyncio
+            loop = _asyncio.get_event_loop()
+            if feature == "targets":
+                expected = self._last_a04_time
+            elif feature == "point_cloud":
+                expected = self._last_a08_time
+            else:
+                return
+            _asyncio.create_task(self._feature_timeout_task(feature, expected))
+        except Exception:
+            pass
+
+    async def _feature_timeout_task(self, feature: str, expected_time: float) -> None:
+        """Async task to wait for timeout and set feature to False if stale."""
+        try:
+            import asyncio as _asyncio
+            await _asyncio.sleep(self._feature_timeout_sec)
+            # Check if a newer packet arrived since scheduling
+            if feature == "targets":
+                if expected_time != self._last_a04_time:
+                    return
+                if self._targets_active:
+                    self._targets_active = False
+                    try:
+                        checkbox = self.query_one("#on_targets", Checkbox)
+                        if checkbox.value is not False:
+                            self._suppress_on_targets_event = True
+                            try:
+                                checkbox.value = False
+                            finally:
+                                self._suppress_on_targets_event = False
+                            self.call_after_refresh(self.draw_radar_plot)
+                    except Exception:
+                        pass
+            elif feature == "point_cloud":
+                if expected_time != self._last_a08_time:
+                    return
+                if self._point_cloud_active:
+                    self._point_cloud_active = False
+                    try:
+                        checkbox = self.query_one("#on_point_cloud", Checkbox)
+                        if checkbox.value is not False:
+                            self._suppress_on_point_cloud_event = True
+                            try:
+                                checkbox.value = False
+                            finally:
+                                self._suppress_on_point_cloud_event = False
+                            self.call_after_refresh(self.draw_radar_plot)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.log_message(f"[red]Error in feature timeout task ({feature}):[/red] {e}")
     
     def version_listener(self, tf, frame):
         """Handle the radar version information packet (type 0xFFFF).
