@@ -63,6 +63,25 @@ class Target:
             f"[bold red]cluster_id:[/bold red] {self.cluster_id}"
         )
 
+@dataclass
+class CloudPoint:
+    """Structure to store data for a single point in the point cloud."""
+    idx: float   # Cloud index (float per protocol)
+    x: float     # X coordinate (meters)
+    y: float     # Y coordinate (meters)
+    z: float     # Z coordinate (meters)
+    speed: float # Speed (m/s)
+
+    @classmethod
+    def from_bytes(cls, data: bytes, offset: int = 0) -> 'CloudPoint':
+        """Create a PointCloudPoint from bytes starting at offset.
+        Data layout: 5 floats little-endian: idx, x, y, z, speed.
+        """
+        if len(data) < offset + 20:
+            raise ValueError(f"Not enough data to create a PointCloudPoint: need 20 bytes, got {len(data) - offset}")
+        idx, x, y, z, speed = struct.unpack('<fffff', data[offset:offset+20])
+        return cls(idx, x, y, z, speed)
+
 PORT_DEFAULT = "/dev/cu.usbserial-XXXX"
 BAUD_DEFAULT = "115200"
 
@@ -186,6 +205,8 @@ class RadarApp(App):
         
         # List to store current targets for display
         self.current_targets = []
+        # List to store current point cloud for display (list of PointCloudPoint)
+        self.current_point_cloud: list[CloudPoint] = []
         
         # Initialize TinyFrame
         self.tf = TF.TinyFrame()
@@ -203,6 +224,7 @@ class RadarApp(App):
         self.tf.add_fallback_listener(self.fallback_listener)
         self.tf.add_type_listener(0xA0A, self.area_data_listener)  # Area data packets
         self.tf.add_type_listener(0xA04, self.target_coordinates_listener)  # Target coordinates packets
+        self.tf.add_type_listener(0xA08, self.point_cloud_listener)  # Point cloud packets
         self.tf.add_type_listener(0xFFFF, self.version_listener)  # Radar version information packets
         
         # Initialize the radar status widget
@@ -324,6 +346,20 @@ class RadarApp(App):
                     label = f"T {target.flag}, X={target.x:.2f}, Y={target.y:.2f}"
                     canvas.write_text(int(cx) + 1, int(cy), label)
             
+            # Draw point cloud (if enabled)
+            try:
+                on_point_cloud = self.query_one("#on_point_cloud", Checkbox).value
+            except Exception:
+                on_point_cloud = False
+            if on_point_cloud and self.current_point_cloud:
+                pc_canvas_points = []
+                for pt in self.current_point_cloud:
+                    # pt is PointCloudPoint
+                    cx, cy = self.world_to_canvas(pt.x, pt.y, width, height)
+                    pc_canvas_points.append((cx, cy))
+                if pc_canvas_points:
+                    canvas.set_hires_pixels(pc_canvas_points, HiResMode.BRAILLE, style="red")
+            
             # Draw a title
             canvas.write_text(2, 0, "Radar Target Display", TextAlign.LEFT)
             
@@ -331,7 +367,7 @@ class RadarApp(App):
             self.log_message(f"[red]Error drawing radar plot:[/red] {e}")
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
-    
+        
     def update_data_table(self, frame, formatted_data):
         """Update the DataTable with frame information.
         
@@ -502,6 +538,30 @@ class RadarApp(App):
                         f"[bold green]Version:[/bold green] {major}.{minor}.{patch}"
                     )
             
+            elif frame_type == 0xA08:  # 0xA08 packet - Point cloud
+                # Expect at least 4 bytes for count
+                # if there is only 4 zero bytes - ignore this message
+                if len(data) >= 4:
+                    count = struct.unpack('<I', data[0:4])[0]
+                    # Calculate how many complete points we actually have in the payload
+                    if count > 0:
+                        max_points = (len(data) - 4) // 20  # each point: 5 floats = 20 bytes
+                        actual = min(count, max_points)
+                        points: list[CloudPoint] = []
+                        offset = 4
+                        for i in range(actual):
+                            try:
+                                pt = CloudPoint.from_bytes(data, offset)
+                                points.append(pt)
+                            except Exception as e:
+                                self.log_message(f"[red]Error parsing point {i}:[/red] {e}")
+                                break
+                            offset += 20
+                        # Update state and schedule redraw
+                        self.current_point_cloud = points
+                        self.call_after_refresh(self.draw_radar_plot)
+                    return f"[bold red]PointCloud:[/bold red] {len(self.current_point_cloud)} point(s)"
+            
             # Default formatting for other packet types
             return data.hex(' ')
             
@@ -528,6 +588,8 @@ class RadarApp(App):
             
             # Clear the current targets list
             self.current_targets = []
+            # Clear the current point cloud list
+            self.current_point_cloud = []
             
             # Redraw the radar plot to clear the targets
             self.call_after_refresh(self.draw_radar_plot)
@@ -601,6 +663,8 @@ class RadarApp(App):
                 self.send_open_point_cloud_display()
             else:
                 self.send_close_point_cloud_display()
+            # Redraw to show/hide point cloud immediately
+            self.call_after_refresh(self.draw_radar_plot)
 
     async def connect_serial(self) -> None:
         """Connect to the serial port."""
@@ -1187,6 +1251,18 @@ class RadarApp(App):
             self.update_data_table(frame, formatted_data)
         except Exception as e:
             self.log_message(f"[red]Error in target coordinates listener:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+    
+    def point_cloud_listener(self, tf, frame):
+        """Handle the point cloud packet (type 0xA08).
+        Parses points, updates state, and updates the DataTable.
+        """
+        try:
+            formatted_data = self.format_packet_data(frame.type, frame.data)
+            self.update_data_table(frame, formatted_data)
+        except Exception as e:
+            self.log_message(f"[red]Error in point cloud listener:[/red] {e}")
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
     
