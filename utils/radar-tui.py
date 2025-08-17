@@ -186,6 +186,7 @@ class RadarApp(App):
                 # Radar control panel
                 with Horizontal(id="radar_controls"):
                     yield Checkbox("Point Cloud", id="on_point_cloud", value=False)
+                    yield Checkbox("Targets", id="on_targets", value=False)
 
                 table = DataTable(id="table")
                 table.add_columns("Type", "Count", "ID", "Length", "Data")
@@ -664,6 +665,13 @@ class RadarApp(App):
             else:
                 self.send_close_point_cloud_display()
             # Redraw to show/hide point cloud immediately
+            self.call_after_refresh(self.draw_radar_plot)
+        elif checkbox_id == "on_targets":
+            if event.checkbox.value:
+                self.send_open_target_display()
+            else:
+                self.send_close_target_display()
+            # Redraw to reflect targets visibility or state change
             self.call_after_refresh(self.draw_radar_plot)
 
     async def connect_serial(self) -> None:
