@@ -7,6 +7,12 @@
 
 Кратко: запустите `radar-tui.py` и нажмите кнопку «Trigger Firmware update». Радар перейдёт в режим загрузки новой прошивки (bootloader). Затем выйдите из `radar-tui.py` и выполните передачу файла прошивки по протоколу XMODEM‑CRC при помощи `xmodem_send.py`.
 
+## Как правильно клонировать репозиторий вместе с submodules
+- Одной командой:
+    - `git clone --recurse-submodules <this-repo-url>`
+- Если у вас уже склонирован репозиторий без submodules:
+    - `git submodule update --init --recursive`
+
 ## Требования
 - Установленный Python 3.7+.
 - Зависимости из `utils/requirements.txt`:

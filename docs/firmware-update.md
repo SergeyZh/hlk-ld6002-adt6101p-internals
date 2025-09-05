@@ -8,6 +8,12 @@ This guide explains how to switch the radar into bootloader mode and upload new 
 
 In short: run `radar-tui.py` and press the “Trigger Firmware update” button. The radar will enter bootloader mode. Then quit `radar-tui.py` and send the firmware file over XMODEM‑CRC using `xmodem_send.py`.
 
+## Cloning with submodules
+- Recommended (single step):
+    - `git clone --recurse-submodules <this-repo-url>`
+- If you already cloned without submodules:
+    - `git submodule update --init --recursive`
+
 ## Requirements
 - Python 3.7+ installed.
 - Dependencies from `utils/requirements.txt`:

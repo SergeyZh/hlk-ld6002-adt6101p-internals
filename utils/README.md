@@ -150,8 +150,8 @@ Note: if you prefer HTTPS for the submodule, change the URL in .gitmodules accor
 
 ## XMODEM-CRC File Sender
 
-For a step-by-step firmware update guide (EN), see: ../docs/firmware-update.en.md
-For a step-by-step firmware update guide (RU), see: ../docs/firmware-update.ru.md
+For a step-by-step firmware update guide (EN), see: [firmware-update.md](../docs/firmware-update.md)
+For a step-by-step firmware update guide (RU), see: [firmware-update.ru.md](../docs/firmware-update.ru.md)
 
 A simple utility to send a file over a serial port using the XMODEM-CRC protocol (128-byte blocks).
 
