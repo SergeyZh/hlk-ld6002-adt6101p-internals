@@ -34,7 +34,7 @@ The research process involves exploring the internal structure of the ADT6101P a
 - [x] [Bootloader ADT6101P analysis](docs/bootloader-adt6101p.md)
 - [x] [ota_jump_code analysis](docs/ota_jump_code-hlk-ld6002.md)
 - [x] [ota_boot_32k analysis](docs/ota_boot_32k-hlk-ld6002.md)
-- [ ] Update the firmware in a simple way, without using the Windows program.
+- [x] [Update the firmware](docs/firmware-update.md) in a simple way, without using the Windows program.
 - [ ] Retrieve "raw" radar data from the chip to a host computer.
 - [ ] Switch between different firmware versions on the sensor to change functionality on the fly.
 - [ ] Develop custom firmware to expand the sensor’s capabilities.

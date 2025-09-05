@@ -90,7 +90,7 @@ The application interface consists of the following elements:
 
 ### Keyboard Shortcuts
 
-- **Ctrl+C**: Exit the application
+- **Ctrl+Q**: Exit the application
 - **Tab**: Navigate between input fields and buttons
 
 ## Comparison with radar-client.py
@@ -147,6 +147,34 @@ from vendor.PonyFrame.TinyFrame import TinyFrame as TF
 - `git submodule update --init --recursive`
 
 Note: if you prefer HTTPS for the submodule, change the URL in .gitmodules accordingly.
+
+## XMODEM-CRC File Sender
+
+For a step-by-step firmware update guide (EN), see: ../docs/firmware-update.en.md
+For a step-by-step firmware update guide (RU), see: ../docs/firmware-update.ru.md
+
+A simple utility to send a file over a serial port using the XMODEM-CRC protocol (128-byte blocks).
+
+- Script: `utils/xmodem_send.py`
+- Requirements: `pyserial` (already in `utils/requirements.txt`)
+
+Usage:
+
+```bash
+python utils/xmodem_send.py --port /dev/ttyUSB0 --baud 115200 --file firmware.bin
+```
+
+Options:
+- `--initial-timeout` seconds to wait for receiver to request CRC with 'C' (default 30)
+- `--per-try-timeout` seconds to wait for ACK/NAK per block (default 10)
+- `--retries` max retries per block (default 10)
+- `--rtscts` enable hardware flow control
+- `--xonxoff` enable software flow control
+- `--no-progress` disable progress prints
+
+Notes:
+- The receiver must initiate XMODEM-CRC by sending 'C'. This tool does not fall back to checksum mode by default.
+- Data is sent in 128-byte blocks with CP/M-style padding (0x1A) for the last block.
 
 ## License
 

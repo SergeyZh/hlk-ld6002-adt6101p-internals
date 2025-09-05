@@ -7,13 +7,35 @@ import traceback
 import struct
 from dataclasses import dataclass
 import serial_asyncio
+import work
+
 from vendor.PonyFrame.TinyFrame import TinyFrame as TF
+from textual import work
 from textual.app import App, ComposeResult
+from textual.screen import Screen
+from textual.screen import ModalScreen
 from textual.widgets import Header, Footer, Button, Input, Log, DataTable, Static, Switch, Checkbox
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, Grid
 from textual.reactive import reactive
 from textual.coordinate import Coordinate
 from textual_hires_canvas import Canvas, HiResMode, TextAlign
+
+# --- Radar type naming (easy to override) ---
+# Map radar_type_value (1..9) to human-readable names.
+# To override names, edit this dict in code or replace via configuration in your fork.
+RADAR_TYPE_NAMES: dict[int, str] = {
+    1: "Infant Monitoring, HLK-6002H",
+    3: "Fall Detection v2, HLK-LD6002C",
+    4: "Breath/Heart Monitoring, HLK-LD6002",
+    6: "3D Human Detection, HLK-LD6002B",
+    8: "Fall Detection v4, HLK-LD6002C",
+}
+
+def get_radar_type_name(radar_type_value: int) -> str:
+    """Return human-readable radar type name for given integer value.
+    Easy to override by changing RADAR_TYPE_NAMES.
+    """
+    return RADAR_TYPE_NAMES.get(radar_type_value, f"Unknown ({radar_type_value})")
 
 @dataclass
 class Target:
@@ -85,6 +107,58 @@ class CloudPoint:
 PORT_DEFAULT = "/dev/cu.usbserial-XXXX"
 BAUD_DEFAULT = "115200"
 
+class ConfirmDialog(ModalScreen[bool]):
+    BINDINGS = [
+        ("escape", "app.pop_screen", "Close"),
+    ]
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.message = message
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Static(self.message, id="question"),
+            Button("Yes", id="confirm_yes", variant="warning"),
+            Button("No", id="confirm_no", variant="primary"),
+            id="dialog",
+        )
+    def on_mount(self) -> None:
+        try:
+            self.set_focus(self.query_one("#confirm_no", Button))
+        except Exception:
+            pass
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm_yes":
+            self.dismiss(True)
+        elif event.button.id == "confirm_no":
+            self.dismiss(False)
+
+class FirmwareScreen(Screen):
+    """Simple Firmware screen with title and Esc to close."""
+
+    BINDINGS = [
+        ("escape", "app.pop_screen", "Close"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._prev_title: str | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        yield Static("Firmware screen", id="firmware_info")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        # Save and temporarily set the app title
+        self._prev_title = self.app.title
+        self.app.title = "Firmware"
+
+    def on_unmount(self) -> None:
+        # Restore previous title
+        if self._prev_title is not None:
+            self.app.title = self._prev_title
+
+
 class RadarApp(App):
     """A Textual TUI application for radar communication using TinyFrame.
     
@@ -128,6 +202,15 @@ class RadarApp(App):
       Each target includes coordinates (x, y, z), doppler index, and cluster ID
     - Other types: Displayed as hex strings
     """
+
+    async def on_unmount(self) -> None:
+        """Best-effort cleanup when screen unmounts (covers some exit paths)."""
+        try:
+            await self.disconnect_serial()
+            # Schedule async cleanup on the app loop; ignore errors if already closed
+            # self.call_after_refresh(lambda: asyncio.create_task(self.disconnect_serial()))
+        except Exception:
+            pass
     
     # World coordinate bounds for the radar data
     XMIN, XMAX = -4, 4  # X-axis bounds in meters
@@ -144,12 +227,38 @@ class RadarApp(App):
     #right_panel { width: 2fr; }
     #log { height: 1fr; }
     #table { height: 5fr; }
+    
+    ConfirmDialog {
+        align: center middle;
+        border: round $warning;
+    }
+    #dialog {
+        grid-size: 2;
+        grid-gutter: 1 2;
+        grid-rows: 1fr 3;
+        padding: 0 1;
+        width: 60;
+        height: 11;
+        border: thick $background 80%;
+        background: darkred;
+        color: yellow;
+    }
+
+    #question {
+        column-span: 2;
+        height: 1fr;
+        width: 1fr;
+        content-align: center middle;
+    }
+    ConfirmDialog>Grid>Button {
+        width: 100%;
+    }
     Canvas { 
         border: round green;
         height: 5fr;
     }
     #radar_controls {
-        height: auto;
+        height: 3fr;
         padding: 0;
         border: tab $warning;
         margin-bottom: 1;
@@ -162,6 +271,11 @@ class RadarApp(App):
         margin-bottom: 1;
     }
     """
+    
+    BINDINGS = [
+#        ("ctrl+f", "open_firmware", "Firmware"),
+#        ("ctrl+q", "quit_app", "Quit"),
+    ]
     
     # Reactive variables for connection status and radar information
     connected = reactive(False)
@@ -184,9 +298,11 @@ class RadarApp(App):
                 yield Static("Radar Status: Loading...", id="radar_status")
                 
                 # Radar control panel
-                with Horizontal(id="radar_controls"):
-                    yield Checkbox("Point Cloud", id="on_point_cloud", value=False)
-                    yield Checkbox("Targets", id="on_targets", value=False)
+                with Vertical(id="radar_controls"):
+                    with Horizontal():
+                        yield Checkbox("Point Cloud", id="on_point_cloud", value=False, compact=False)
+                        yield Checkbox("Targets", id="on_targets", value=False, compact=False)
+                    yield Button("Trigger Firmware update", id="request_fw_update", variant="warning", compact=False)
 
                 table = DataTable(id="table")
                 table.add_columns("Type", "Count", "ID", "Length", "Data")
@@ -251,8 +367,8 @@ class RadarApp(App):
         # Initialize the radar plot after the canvas has been properly sized
         self.call_after_refresh(self.draw_radar_plot)
 
-        horizontal = self.query_one("#radar_controls", Horizontal)
-        horizontal.border_title = "[bold]Radar Controls[/bold]"
+        radar_control_window = self.query_one("#radar_controls", Vertical)
+        radar_control_window.border_title = "[bold]Radar Controls[/bold]"
     
     def on_resize(self) -> None:
         """Handle resize events to redraw the radar plot."""
@@ -554,9 +670,10 @@ class RadarApp(App):
                     minor = data[2]
                     patch = data[3]
                     
-                    # Format as a structured string with color highlighting
+                    # Format as a structured string with color highlighting and textual type
+                    radar_type_name = get_radar_type_name(radar_type_value)
                     return (
-                        f"[bold cyan]Radar Type:[/bold cyan] {radar_type_value}, "
+                        f"[bold cyan]Radar Type:[/bold cyan] {radar_type_value} ({radar_type_name}), "
                         f"[bold green]Version:[/bold green] {major}.{minor}.{patch}"
                     )
             
@@ -627,6 +744,13 @@ class RadarApp(App):
 
         connect_button.disabled = connected
         disconnect_button.disabled = not connected
+        
+        # Optionally disable firmware update button when disconnected
+        try:
+            fw_btn = self.query_one("#request_fw_update", Button)
+            fw_btn.disabled = not connected
+        except Exception:
+            pass
 
         # Update the UI with connection status
         self.update_radar_status()
@@ -641,6 +765,26 @@ class RadarApp(App):
 
         self.update_radar_status()
         
+    def action_open_firmware(self) -> None:
+        """Open the Firmware screen."""
+        self.push_screen(FirmwareScreen())
+        
+    async def action_quit_app(self) -> None:
+        """Quit the app gracefully: perform Disconnect actions, then exit."""
+        try:
+            await self.disconnect_serial()
+        except Exception:
+            pass
+        # Exit the Textual application
+        try:
+            self.exit()
+        except Exception:
+            # Fallback for older Textual: action_quit if available
+            try:
+                self.app.action_quit()
+            except Exception:
+                pass
+        
     def update_radar_status(self) -> None:
         """Update the radar status widget with radar information."""
         try:
@@ -650,7 +794,7 @@ class RadarApp(App):
             if self.connected:
                 status_text = (
                     f"[bold]Connection:[/bold] [green]Connected[/green]\n"
-                    f"[bold]Radar Type:[/bold] {self.radar_type}\n"
+                    f"[bold]Radar Type:[/bold] ({self.radar_type}) [{get_radar_type_name(self.radar_type)}]\n"
                     f"[bold]Radar Version:[/bold] {self.radar_version}"
                 )
             else:
@@ -667,7 +811,7 @@ class RadarApp(App):
             self.log_message(f"[red]Error updating radar status:[/red] {e}")
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
-
+    @work
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button press events."""
         button_id = event.button.id
@@ -676,6 +820,20 @@ class RadarApp(App):
             await self.connect_serial()
         elif button_id == "disconnect":
             await self.disconnect_serial()
+        elif button_id == "request_fw_update":
+            # Show confirmation dialog before requesting firmware update
+            message = (
+                "You are switching the radar to firmware update mode. You cannot make the radar work again until you install the correct firmware, even if you turn it off and on. Continue?"
+            )
+            try:
+                result = await self.push_screen_wait(ConfirmDialog(message))
+            except Exception as e:
+                # Fallback: if modal fails for some reason, default to not proceeding
+                self.log_message(f"Exception: {e}")
+                result = False
+            self.log_message(f"Modal closed, result: {result}")
+            if result:
+                self.send_request_firmware_update()
 
     async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         checkbox_id =event.checkbox.id
@@ -1268,6 +1426,18 @@ class RadarApp(App):
             self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
             self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
             
+    def send_request_firmware_update(self) -> None:
+        """Request the radar to enter Firmware Update mode by sending type 0x3000."""
+        try:
+            self.log_message("[cyan]Requesting Firmware Update mode (type 0x3000)...[/cyan]")
+            # Send an empty packet with type 0x3000 to trigger firmware update mode
+            self.tf.send(0x3000, b"")
+            self.log_message("[green]Firmware Update request sent.[/green]")
+        except Exception as e:
+            self.log_message(f"[red]Error sending Firmware Update request:[/red] {e}")
+            self.log_message(f"[red]Error details:[/red] {type(e).__name__}: {str(e)}")
+            self.log_message(f"[red]Traceback:[/red] {traceback.format_exc()}")
+            
     def send_packet(self, packet_type: int, data: bytes = b"") -> None:
         """Send a packet with the specified type and data to the radar.
         
@@ -1498,10 +1668,11 @@ class RadarApp(App):
                 version_str = f"{major}.{minor}.{patch}"
                 
                 # Update the reactive variables
-                self.radar_type = f"Type {radar_type_value}"
+                self.radar_type = radar_type_value
                 self.radar_version = version_str
-                
-                self.log_message(f"[green]Radar version information received: Type {radar_type_value}, Version {version_str}[/green]")
+                radar_type_name = get_radar_type_name(radar_type_value)
+
+                self.log_message(f"[green]Radar version information received: Type {radar_type_value} ({radar_type_name}), Version {version_str}[/green]")
                 
                 # Format the data using the existing format_packet_data function
                 formatted_data = self.format_packet_data(frame.type, frame.data)
