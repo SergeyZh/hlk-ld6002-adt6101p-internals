@@ -1,4 +1,4 @@
-textual
+textual==5.3.0
 pyserial
 pyserial-asyncio
 textual-hires-canvas==0.10.1

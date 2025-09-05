@@ -7,7 +7,6 @@ import traceback
 import struct
 from dataclasses import dataclass
 import serial_asyncio
-import work
 
 from vendor.PonyFrame.TinyFrame import TinyFrame as TF
 from textual import work
